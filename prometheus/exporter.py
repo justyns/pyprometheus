@@ -95,7 +95,7 @@ class RedisExporter(Exporter):
 
         if metric_type == 'histogram':
             # we need to sort the values by the bucket labeled "le"
-            sorted_keys = sorted([json.loads(x) for x in metric_dict['values']], key=lambda k: k['le'])
+            sorted_keys = sorted([json.loads(x, object_pairs_hook=OrderedDict) for x in metric_dict['values']], key=lambda k: k['le'])
             # and then we need to store the values again json encoded
             vals = metric_dict['values']
             metric_dict['values'] = OrderedDict()
