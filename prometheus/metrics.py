@@ -18,6 +18,16 @@ class Metric:
 
     def __init__(self, name, help_text,
                  base_labels=None, buckets=None):
+        """
+        This is the base class that all other metric types are inherited from.
+
+        :param str name: Name of metric.  Must be alphanumeric and can contain underscores.  See http://prometheus.io/docs/practices/naming/
+        :param str help_text: A short description of what this metric contains.
+        :param dict base_labels: A dictionary of labels that will automatically be merged into any additional labels
+                                 provided later when adding samples.
+        :param list buckets: Only used for histograms.  Determines what buckets to place requests in.
+        :return:
+        """
         if " " in name:
             raise ValueError("metric name can not contain spaces")
         if self.metric_type not in ['untyped', 'gauge', 'counter', 'summary', 'histogram']:
@@ -40,7 +50,9 @@ class Metric:
         self.register_metric()
 
     def register_metric(self):
-        # Add our key to a redis set so that a collector can come by later and collect them
+        """
+        Add our key to a redis set so that a collector can come by later and collect them
+        """
         self.r.sadd("PROM:metric_keys", "{key} {type} {name} {help}".format(key=self.key_name(),
                                                                             help=self.help_text,
                                                                             type=self.metric_type,
@@ -51,13 +63,26 @@ class Metric:
         self.r.expire(self.key_name(), -1)
 
     def key_name(self, labels=None):
+        """
+        Generates the string we should use as the redis key name.
+
+        :param dict labels: If provided, the labels are appended to the key name
+        :return str:
+        """
         if not labels:
             return self.key_prefix
         else:
             return "{prefix}:{labels}".format(prefix=self.key_prefix, labels=labels)
 
     def set_value(self, labels, value):
-        """ Sets a value in the container"""
+        """
+        Stores a sample value in redis.   If there is an existing sample with the same labels,
+        it will be overwritten with the value.
+
+        :param dict labels: Labels that will be stored for this sample
+        :param int|float value: Value to be set for this sample
+        :return:
+        """
 
         if labels:
             self._label_names_correct(labels)
@@ -66,45 +91,70 @@ class Metric:
         r.hset(self.key_name(), self._labels(labels), value)
 
     def inc(self, labels, increment=1):
-        """ Increment counter(or gauge)'s value by increment. """
+        """
+        Increments a counter or gauge's value.   Redis's incr and hincrby commands are atomic,
+        so this can safely be used between processes.
+
+        :param dict labels: Labels that will be stored for this sample
+        :param int|float increment: Amount to decrease the value by.  Must be positive.
+        :return:
+        :raises ValueError: If increment is negative
+        """
 
         # Redis's incr command is atomic so we don't need to get/set this on our own
         if increment < 0:
             raise ValueError("increment can not be negative")
-        self.r.hincrby(self.key_name(), self._labels(labels), increment)
+        # print "hincrbyfloat(%s, %r, %r)" % (self.key_name(), self._labels(labels), float(increment))
+        self.r.hincrbyfloat(self.key_name(), self._labels(labels), float(increment))
 
     def dec(self, labels, increment=1):
-        """ Decrement gauge's value by increment. """
+        """
+        Decreases the value of a gauge by increment, using redis's hincrby command.
+
+        :param dict labels: Labels that will be stored for this sample
+        :param int|float increment: Amount to increase the value by.  Must be positive.
+        :return:
+        :raises ValueError: If increment is negative
+        """
 
         if increment < 0:
             raise ValueError("increment can not be negative")
         self.r.hincrby(self.key_name(), self._labels(labels), -increment)
 
     def get_value(self, labels):
-        """ Gets a value in the container, exception if isn't present"""
+        """
+        Returns the value of a metric that matches the labels
+
+        :param dict labels: Dictionary of labels that the metric should match
+        :return:
+        :raises KeyError: If there is no stored sample matching the metric name and labels
+        """
 
         if not self.r.hexists(self.key_name(), self._labels(labels)):
             raise KeyError(labels)
         else:
             return self.r.hget(self.key_name(), self._labels(labels))
 
-    def get(self, labels):
-        """Handy alias"""
-        return self.get_value(labels)
-
-    def set(self, labels, value):
-        """Handy alias"""
-        return self.set_value(labels, value)
-
     def _labels(self, labels):
-        """Returns labels json encoded/sorted + the global labels"""
+        """
+        Returns a string that is json-encoded and contains the labels + global labels in a sorted dictionary.
+
+        :param dict labels: Dictionary of labels to transform
+        :return:
+        """
         labels.update(**self.base_labels)
         self._label_names_correct(labels)
         return json.dumps(collections.OrderedDict(**labels), sort_keys=True)
 
     @staticmethod
     def _label_names_correct(labels):
-        """Raise exception (ValueError) if labels not correct"""
+        """
+        Validates label names to ensure they'll be accepted by prometheus.
+
+        :param dict labels: Dictionary of labels to check
+        :return:
+        :raises ValueError: If labels start with a restricted prefix, or matches a restricted name
+        """
 
         for k, v in labels.items():
             # Check reserved labels
@@ -117,61 +167,71 @@ class Metric:
 
         return True
 
-    def get_all(self):
-        """ Returns a list populated by tuples of 2 elements, first one is
-            a dict with all the labels and the second element is the value
-            of the metric itself
-        """
-        items = self.r.hgetall(self.key_name())
-
-        result = []
-        for k, v in items.items():
-            # Check if is a single value dict (custom empty key)
-            if not k:
-                key = None
-            else:
-                key = json.loads(k, object_pairs_hook=collections.OrderedDict)
-            result.append((key, self.get(k)))
-
-        return result
-
 
 class Counter(Metric):
-    """ Counter is a Metric that represents a single numerical value that only
-        ever goes up.
     """
-
+    A counter is a cumulative metric that represents a single numerical value that only ever goes up. A counter is
+    typically used to count requests served, tasks completed, errors occurred, etc. Counters should not be used to
+    expose current counts of items whose number can also go down, e.g. the number of currently running goroutines.
+    Use gauges for this use case.
+    """
     metric_type = "counter"
 
     def dec(self, labels, increment=1):
-        # override Metric's dec method
+        """
+        A counter can only go up, or be reset.
+
+        :param labels:
+        :param increment:
+        :return:
+        """
         raise TypeError("counters can not be decremented")
 
 
 class Gauge(Metric):
-    """ Gauge is a Metric that represents a single numerical value that can
-        arbitrarily go up and down.
+    """
+    A gauge is a metric that represents a single numerical value that can arbitrarily go up and down.
+    Gauges are typically used for measured values like temperatures or current memory usage, but also "counts" that
+    can go up and down, like the number of running goroutines.
     """
     metric_type = "gauge"
 
 
 class Summary(Metric):
     """
-    The sample sum for a summary or histogram named x is given as a separate sample named x_sum.
-The sample count for a summary or histogram named x is given as a separate sample named x_count.
-Each quantile of a summary named x is given as a separate sample line with the same name x and a label {quantile="y"}.
-The buckets of a histogram and the quantiles of a summary must appear in increasing numerical order of their label values (for the le or the quantile label, respectively).
+    TODO: NOT CURRENT IMPLEMENTED
 
-
+    Similar to a histogram, a summary samples observations (usually things like request durations and response sizes).
+    While it also provides a total count of observations and a sum of all observed values, it calculates configurable
+    quantiles over a sliding time window.
     """
     metric_type = "summary"
 
 
 class Histogram(Metric):
+    """
+    A histogram samples observations (usually things like request durations or response sizes) and counts them in
+    configurable buckets. It also provides a sum of all observed values.
+    """
     metric_type = "histogram"
 
     def observe(self, labels, value):
+        """
+        Adds a new sample to this histogram.  The value will be checked against all of the configured buckets,
+        and if it is less than or equal to that bucket threshold then that bucket count will be increased.
+        The overall count for the metric is also increased, in addition to the sum which is the sum of all values
+
+        :param dict labels: Labels that will be stored for this sample
+        :param float value: Value to store for this sample, typically a time in microseconds or seconds.  Could also
+                            be a size in bytes, kilobytes, etc
+        :return:
+        """
         for bucket in self.buckets:
             if float(value) < float(bucket):
                 labels.update(le=bucket)
                 self.inc(labels, 1)
+        labels.update(le="+Inf")  # the overall hisogram+labels count
+        self.inc(labels, 1)
+        labels.update(le="_sum")  # the overall sum of this histogram+labels
+        self.inc(labels, float(value))
+        labels.pop('le', None)

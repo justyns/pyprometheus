@@ -46,8 +46,19 @@ class Exporter:
             output += "# TYPE {name} {type}\n".format(name=v['name'],
                                                       type=v['type'])
             for sample in v['values']:
-                output += "{name}{labels} {value}\n".format(name=v['name'],
-                                                            labels=self.format_labels(sample),
+                labels = json.loads(sample, object_pairs_hook=OrderedDict)
+                if v['type'] == 'histogram' and labels.get('le') == '_sum':
+                    labels.pop('le', None)
+                    mname = '{name}_sum'.format(name=v['name'])
+                elif v['type'] == 'histogram' and labels.get('le') == '+Inf':
+                    labels.pop('le', None)
+                    mname = '{name}_count'.format(name=v['name'])
+                elif v['type'] == 'histogram':
+                    mname = '{name}_bucket'.format(name=v['name'])
+                else:
+                    mname = v['name']
+                output += "{name}{labels} {value}\n".format(name=mname,
+                                                            labels=self.format_labels(labels),
                                                             value=self.format_value(v['values'][sample]))
         return output
 
@@ -82,14 +93,14 @@ class RedisExporter(Exporter):
             'values': OrderedDict()
         }
         values = self.r.hgetall(metric_key)  # new values
-        print "values: %r" % values
+        # print "values: %r" % values
         metric_dict['values'] = values
 
         if existing_dict:
             # we're updating a metric we've already seen
-            print "existing dict: %r" % existing_dict
+            # print "existing dict: %r" % existing_dict
             for value in values:
-                print "checking value: %r" % value
+                # print "checking value: %r" % value
                 # value = json.loads(value)
                 if value in existing_dict['values']:
                     if metric_type == 'counter' or metric_type == 'histogram':
@@ -107,10 +118,10 @@ class RedisExporter(Exporter):
             metric_dict['values'] = existing_dict['values']
 
         if metric_type == 'histogram':
+            # json decode all of the labels
+            samples = [json.loads(x, object_pairs_hook=OrderedDict) for x in metric_dict['values']]
             # we need to sort the values by the bucket labeled "le"
-            sorted_keys = sorted([json.loads(x, object_pairs_hook=OrderedDict)
-                                  for x in metric_dict['values']],
-                                 key=lambda b: b['le'])
+            sorted_keys = sorted(samples, key=lambda b: b['le'])
             # and then we need to store the values again json encoded
             vals = metric_dict['values']
             metric_dict['values'] = OrderedDict()
