@@ -1,6 +1,5 @@
 from collections import OrderedDict
 import json
-import os
 import redis
 
 
@@ -15,8 +14,12 @@ class Exporter:
         if not labels:
             return ""
         # TODO: escape label values
-        # metric_name and label_name have the usual Prometheus expression language restrictions. label_value can be any sequence of UTF-8 characters, but the backslash, the double-quote, and the line-feed characters have to be escaped as \\, \", and \n, respectively.\
-        labelstr = ",".join(["{k}=\"{v}\"".format(k=k, v=v) for k, v in labels.items()])
+        # metric_name and label_name have the usual Prometheus expression language restrictions.
+        # label_value can be any sequence of UTF-8 characters, but the backslash, the double-quote,
+        # and the line-feed characters have to be escaped as \\, \", and \n, respectively.\
+        labelstr = ",".join(["{k}=\"{v}\"".format(k=k,
+                                                  v=v)
+                             for k, v in labels.items()])
         return "{%s}" % labelstr
 
     def format_value(self, value):
@@ -32,13 +35,15 @@ class Exporter:
         metrics = self.get_all_metrics()
         for k, v in metrics.items():
             # Print the help line
-            output += "\n# HELP {name} {help}\n".format(name=v['name'], help=v['help'])
+            output += "\n# HELP {name} {help}\n".format(name=v['name'],
+                                                        help=v['help'])
             # and the type line
-            output += "# TYPE {name} {type}\n".format(name=v['name'], type=v['type'])
+            output += "# TYPE {name} {type}\n".format(name=v['name'],
+                                                      type=v['type'])
             for sample in v['values']:
                 output += "{name}{labels} {value}\n".format(name=v['name'],
-                                                          labels=self.format_labels(sample),
-                                                          value=self.format_value(v['values'][sample]))
+                                                            labels=self.format_labels(sample),
+                                                            value=self.format_value(v['values'][sample]))
         return output
 
 
@@ -70,7 +75,7 @@ class RedisExporter(Exporter):
             'help': metric_help,
             'values': OrderedDict()
         }
-        values = self.r.hgetall(metric_key) # new values
+        values = self.r.hgetall(metric_key)  # new values
         print "values: %r" % values
         metric_dict['values'] = values
 
@@ -85,7 +90,9 @@ class RedisExporter(Exporter):
                         # Combine the values if it's a counter or histogram
                         # TODO: sort histogram buckets
                         # TODO: append _bucket to histogram bucket names
-                        existing_dict['values'][value] = float(values[value]) + float(existing_dict['values'][value])
+                        existing_dict['values'][value] = float(
+                            values[value]) + float(
+                            existing_dict['values'][value])
                     elif metric_type == 'gauge':
                         # use the last value we see for a gauge - # TODO: is there a better way? we could average it
                         existing_dict['values'][value] = float(values[value])
@@ -95,25 +102,25 @@ class RedisExporter(Exporter):
 
         if metric_type == 'histogram':
             # we need to sort the values by the bucket labeled "le"
-            sorted_keys = sorted([json.loads(x, object_pairs_hook=OrderedDict) for x in metric_dict['values']], key=lambda k: k['le'])
+            sorted_keys = sorted([json.loads(x,object_pairs_hook=OrderedDict)
+                                  for x in metric_dict['values']],
+                                 key=lambda k: k['le'])
             # and then we need to store the values again json encoded
             vals = metric_dict['values']
             metric_dict['values'] = OrderedDict()
             for k in sorted_keys:
                 kn = json.dumps(k, sort_keys=True)
                 metric_dict['values'][kn] = vals[kn]
-            # metric_dict['values'] = sorted([(json.loads(x), metric_dict['values'][x]) for x in metric_dict['values']], key=lambda k: k['le'])
-            # metric_dict['values'] = [json.dumps(x) for x in metric_dict['values']]
-            # metric_dict['values'] = sorted(metric_dict['values'], key=lambda k: k['le'])
 
         return metric_dict
-
 
     def get_all_metrics(self):
         """returns all metrics with their labels and values"""
         metrics = {}
         for item in self.list_metrics():
             metric_name = item[2]
-            metric = self.get_metric(item, existing_dict=metrics.get(metric_name, None))
+            metric = self.get_metric(
+                item,
+                existing_dict=metrics.get(metric_name, None))
             metrics[metric_name] = metric
         return metrics

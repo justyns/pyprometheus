@@ -3,10 +3,10 @@ import json
 import os
 import redis
 
-# Used so only one thread can access the values at the same time
-
-# Used to return the value ordered (not necessary byt for consistency useful)
-decoder = json.JSONDecoder(object_pairs_hook=collections.OrderedDict)
+"""
+A lot/some of the original code in these metrics classes were taken from/inspired by
+    https://github.com/slok/prometheus-python and https://github.com/prometheus/client_python
+"""
 
 RESTRICTED_LABELS_NAMES = ('job',)
 RESTRICTED_LABELS_PREFIXES = ('__',)
@@ -14,20 +14,23 @@ RESTRICTED_LABELS_PREFIXES = ('__',)
 
 class Metric:
     """Base class for all metric types"""
-    REPR_STR = 'untyped'
+    metric_type = 'untyped'
 
-    def __init__(self, name, help_text, base_labels=None, buckets=[0.1, 0.25, 0.5, 0.75, 1, 1.5, 2]):
+    def __init__(self, name, help_text,
+                 base_labels=None, buckets=[0.1, 0.25, 0.5, 0.75, 1, 1.5, 2]):
         if " " in name:
             raise ValueError("metric name can not contain spaces")
-        if self.REPR_STR not in ['untyped', 'gauge', 'counter', 'summary', 'histogram']:
-            raise ValueError("metric type %s is unsupported" % self.REPR_STR)
+        if self.metric_type not in ['untyped', 'gauge', 'counter', 'summary', 'histogram']:
+            raise ValueError("metric type %s is unsupported" % self.metric_type)
 
         self.name = name
         self.help_text = help_text
         self.base_labels = base_labels
         self.buckets = buckets  # only used by histograms
         # changing the key_prefix can break things that rely on it
-        self.key_prefix = "PROM:{pid}:{type}:{name}".format(pid=os.getpid(), name=self.name, type=self.REPR_STR)
+        self.key_prefix = "PROM:{pid}:{type}:{name}".format(pid=os.getpid(),
+                                                            name=self.name,
+                                                            type=self.metric_type)
         self.redis_host = 'localhost'
         self.redis_db = 0
         self.r = redis.StrictRedis(host=self.redis_host, db=self.redis_db)
@@ -37,10 +40,11 @@ class Metric:
         # Add our key to a redis set so that a collector can come by later and collect them
         self.r.sadd("PROM:metric_keys", "{key} {type} {name} {help}".format(key=self.key_name(),
                                                                             help=self.help_text,
-                                                                            type=self.REPR_STR,
+                                                                            type=self.metric_type,
                                                                             name=self.name))
-        # And remove any ttl that may be set on our redis key - this way the collector can set all keys to expire
-        # and we should automatically un-expire them
+        # And remove any ttl that may be set on our redis key
+        # so that the collector can set all keys to expire
+        # and we can automatically un-expire them
         self.r.expire(self.key_name(), -1)
 
     def key_name(self, labels=None):
@@ -56,21 +60,22 @@ class Metric:
             self._label_names_correct(labels)
 
         r = redis.StrictRedis(host=self.redis_host, db=self.redis_db)
-        # with r.pipeline() as pipe:
-        # put a watch on the key we're wanting to change, to prevent clobbering other process's data
-        # TODO:  pipe.watch doesn't work for hash fields, what to do?
-        # pipe.watch(key_name)
         r.hset(self.key_name(), self._labels(labels), value)
 
     def inc(self, labels, increment=1):
-        """ Increment counter's value by increment. """
+        """ Increment counter(or gauge)'s value by increment. """
 
         # Redis's incr command is atomic so we don't need to get/set this on our own
-        # self.r.incr(self.key_name(labels), increment)
-        # self.r.zincrby(self.key_name(), labels, increment)
         if increment < 0:
             raise ValueError("increment can not be negative")
         self.r.hincrby(self.key_name(), self._labels(labels), increment)
+
+    def dec(self, labels, increment=1):
+        """ Decrement gauge's value by increment. """
+
+        if increment < 0:
+            raise ValueError("increment can not be negative")
+        self.r.hincrby(self.key_name(), self._labels(labels), -increment)
 
     def get_value(self, labels):
         """ Gets a value in the container, exception if isn't present"""
@@ -118,10 +123,10 @@ class Metric:
         result = []
         for k, v in items.items():
             # Check if is a single value dict (custom empty key)
-            if not k or k == MetricDict.EMPTY_KEY:
+            if not k:
                 key = None
             else:
-                key = decoder.decode(k)
+                key = json.loads(k, object_pairs_hook=collections.OrderedDict)
             result.append((key, self.get(k)))
 
         return result
@@ -132,15 +137,18 @@ class Counter(Metric):
         ever goes up.
     """
 
-    REPR_STR = "counter"
+    metric_type = "counter"
+
+    def dec(self, labels, increment=1):
+        # override Metric's dec method
+        raise TypeError("counters can not be decremented")
 
 
 class Gauge(Metric):
     """ Gauge is a Metric that represents a single numerical value that can
         arbitrarily go up and down.
     """
-    REPR_STR = "gauge"
-    # TODO: incr/decr methods
+    metric_type = "gauge"
 
 
 class Summary(Metric):
@@ -152,11 +160,11 @@ The buckets of a histogram and the quantiles of a summary must appear in increas
 
 
     """
-    REPR_STR = "summary"
+    metric_type = "summary"
 
 
 class Histogram(Metric):
-    REPR_STR = "histogram"
+    metric_type = "histogram"
 
     def observe(self, labels, value):
         for bucket in self.buckets:
