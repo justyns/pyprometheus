@@ -17,7 +17,7 @@ class Metric:
     metric_type = 'untyped'
 
     def __init__(self, name, help_text,
-                 base_labels=None, buckets=[0.1, 0.25, 0.5, 0.75, 1, 1.5, 2]):
+                 base_labels=None, buckets=None):
         if " " in name:
             raise ValueError("metric name can not contain spaces")
         if self.metric_type not in ['untyped', 'gauge', 'counter', 'summary', 'histogram']:
@@ -26,6 +26,9 @@ class Metric:
         self.name = name
         self.help_text = help_text
         self.base_labels = base_labels
+        if not buckets:
+            # default values for the buckets
+            buckets = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2]
         self.buckets = buckets  # only used by histograms
         # changing the key_prefix can break things that rely on it
         self.key_prefix = "PROM:{pid}:{type}:{name}".format(pid=os.getpid(),
@@ -99,23 +102,24 @@ class Metric:
         self._label_names_correct(labels)
         return json.dumps(collections.OrderedDict(**labels), sort_keys=True)
 
-    def _label_names_correct(self, labels):
+    @staticmethod
+    def _label_names_correct(labels):
         """Raise exception (ValueError) if labels not correct"""
 
         for k, v in labels.items():
             # Check reserved labels
             if k in RESTRICTED_LABELS_NAMES:
-                raise ValueError("Labels not correct")
+                raise ValueError("Cannot use restricted label name %s" % k)
 
             # Check prefixes
             if any(k.startswith(i) for i in RESTRICTED_LABELS_PREFIXES):
-                raise ValueError("Labels not correct")
+                raise ValueError("Label cannot start with %r" % RESTRICTED_LABELS_PREFIXES)
 
         return True
 
     def get_all(self):
         """ Returns a list populated by tuples of 2 elements, first one is
-            a dict with all the labels and the second elemnt is the value
+            a dict with all the labels and the second element is the value
             of the metric itself
         """
         items = self.r.hgetall(self.key_name())

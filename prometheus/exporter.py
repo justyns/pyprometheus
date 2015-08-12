@@ -4,10 +4,14 @@ import redis
 
 
 class Exporter:
+    def __init__(self):
+        pass
+
     def get_all_metrics(self):
         return {}
 
-    def format_labels(self, labels):
+    @staticmethod
+    def format_labels(labels):
         if isinstance(labels, str):
             # try to json decode
             labels = json.loads(labels, object_pairs_hook=OrderedDict)
@@ -22,7 +26,8 @@ class Exporter:
                              for k, v in labels.items()])
         return "{%s}" % labelstr
 
-    def format_value(self, value):
+    @staticmethod
+    def format_value(value):
         """returns a float acceptable by prometheus / go"""
         if value is None:
             return "NaN"
@@ -49,6 +54,7 @@ class Exporter:
 
 class RedisExporter(Exporter):
     def __init__(self):
+        Exporter.__init__(self)
         self.redis_host = 'localhost'
         self.redis_db = 0
         self.metrics_key = 'PROM:metric_keys'
@@ -102,9 +108,9 @@ class RedisExporter(Exporter):
 
         if metric_type == 'histogram':
             # we need to sort the values by the bucket labeled "le"
-            sorted_keys = sorted([json.loads(x,object_pairs_hook=OrderedDict)
+            sorted_keys = sorted([json.loads(x, object_pairs_hook=OrderedDict)
                                   for x in metric_dict['values']],
-                                 key=lambda k: k['le'])
+                                 key=lambda b: b['le'])
             # and then we need to store the values again json encoded
             vals = metric_dict['values']
             metric_dict['values'] = OrderedDict()
